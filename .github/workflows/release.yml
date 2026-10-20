@@ -1,0 +1,154 @@
+name: release
+run-name: release ${{ inputs.tag }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Private source tag to publish (for example v0.2.3)
+        required: true
+        type: string
+
+permissions:
+  actions: write
+  contents: read
+
+concurrency:
+  group: release-${{ inputs.tag }}
+  cancel-in-progress: false
+
+env:
+  SOURCE_REPO: davidzhang12138/CLIProxyAPI-Plugins
+  RELEASE_TAG: ${{ inputs.tag }}
+
+jobs:
+  prepare-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Prepare draft in private source repo
+        env:
+          GH_TOKEN: ${{ secrets.MAIN_REPO_TOKEN }}
+          RELEASE_TAG: ${{ env.RELEASE_TAG }}
+          SOURCE_REPO: ${{ env.SOURCE_REPO }}
+        run: |
+          gh release view "$RELEASE_TAG" --repo "$SOURCE_REPO" >/dev/null 2>&1 || \
+          gh release create "$RELEASE_TAG" --repo "$SOURCE_REPO" --draft --title "$RELEASE_TAG" --generate-notes
+
+  build:
+    needs: prepare-release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            platform: linux-amd64
+            ext: so
+            docker: '--docker'
+          - runner: ubuntu-24.04-arm
+            platform: linux-arm64
+            ext: so
+            docker: '--docker'
+          - runner: macos-15
+            platform: darwin-arm64
+            ext: dylib
+            docker: ''
+          - runner: macos-15-intel
+            platform: darwin-amd64
+            ext: dylib
+            docker: ''
+          - runner: windows-latest
+            platform: windows-amd64
+            ext: dll
+            docker: ''
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.SOURCE_REPO }}
+          ref: refs/tags/${{ env.RELEASE_TAG }}
+          ssh-key: ${{ secrets.SOURCE_DEPLOY_KEY }}
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.0'
+          cache: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Check formatting and dependency boundary
+        run: |
+          test -z "$(gofmt -l cmd internal)"
+          python3 scripts/check-boundary.py
+          go mod verify
+      - name: Unit and concurrency tests
+        run: go test -race ./...
+      - name: Build plugin archive
+        run: |
+          version="${RELEASE_TAG#v}"
+          for plugin in hyper websearch channel-guard; do
+            python3 scripts/build.py --plugin "$plugin" --version "$version" ${{ matrix.docker }}
+          done
+      - uses: actions/checkout@v4
+        with:
+          repository: router-for-me/CLIProxyAPI
+          ref: v8.0.31
+          path: .cache/upstream
+      - name: Build unmodified official CPA
+        working-directory: .cache/upstream
+        run: go build -o "$RUNNER_TEMP/cpa-host.exe" ./cmd/server
+      - name: Official host integration
+        run: python3 scripts/integration.py --cpa-binary "$RUNNER_TEMP/cpa-host.exe" --plugin "dist/hyper.${{ matrix.ext }}"
+      - name: Hyper independent Resin proxy integration
+        run: python3 scripts/integration_hyper_proxy.py --cpa-binary "$RUNNER_TEMP/cpa-host.exe" --plugin "dist/hyper.${{ matrix.ext }}"
+      - name: WebSearch official host integration
+        run: python3 scripts/integration_websearch.py --cpa-binary "$RUNNER_TEMP/cpa-host.exe" --plugin "dist/websearch.${{ matrix.ext }}"
+      - name: Channel Guard official host integration
+        run: python3 scripts/integration_channel_guard.py --cpa-binary "$RUNNER_TEMP/cpa-host.exe" --plugin "dist/channel-guard.${{ matrix.ext }}"
+      - uses: actions/checkout@v4
+        if: matrix.platform == 'linux-amd64'
+        with:
+          repository: seakee/CPA-Manager-Plus
+          ref: v1.14.6
+          path: .cache/manager
+      - name: Build unmodified CPAMP
+        if: matrix.platform == 'linux-amd64'
+        working-directory: .cache/manager/apps/manager-server
+        run: go build -o "$RUNNER_TEMP/cpamp-host" ./cmd/cpa-manager-plus
+      - name: Full CPA and CPAMP integration
+        if: matrix.platform == 'linux-amd64'
+        run: python3 scripts/integration.py --cpa-binary "$RUNNER_TEMP/cpa-host.exe" --plugin dist/hyper.so --manager-binary "$RUNNER_TEMP/cpamp-host"
+      - name: Upload verified archive to draft Release
+        env:
+          GH_TOKEN: ${{ secrets.MAIN_REPO_TOKEN }}
+          SOURCE_REPO: ${{ env.SOURCE_REPO }}
+          RELEASE_TAG: ${{ env.RELEASE_TAG }}
+        run: gh release upload "$RELEASE_TAG" --repo "$SOURCE_REPO" dist/hyper_*.zip dist/websearch_*.zip dist/channel-guard_*.zip --clobber
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish verified plugin archives
+        env:
+          GH_TOKEN: ${{ secrets.MAIN_REPO_TOKEN }}
+          SOURCE_REPO: ${{ env.SOURCE_REPO }}
+          RELEASE_TAG: ${{ env.RELEASE_TAG }}
+        run: |
+          mkdir -p dist
+          gh release download "$RELEASE_TAG" --repo "$SOURCE_REPO" --pattern '*.zip' --dir dist
+          cd dist
+          test "$(find . -maxdepth 1 -name '*.zip' | wc -l)" -eq 15
+          sha256sum *.zip > checksums.txt
+          gh release upload "$RELEASE_TAG" --repo "$SOURCE_REPO" checksums.txt --clobber
+          prerelease_flag=()
+          if [[ "$RELEASE_TAG" == *-* ]]; then
+            prerelease_flag=(--prerelease)
+            gh release edit "$RELEASE_TAG" --repo "$SOURCE_REPO" --draft=false "${prerelease_flag[@]}"
+          else
+            gh release edit "$RELEASE_TAG" --repo "$SOURCE_REPO" --draft=false --latest
+          fi

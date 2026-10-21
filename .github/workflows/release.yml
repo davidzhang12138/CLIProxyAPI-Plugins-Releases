@@ -90,44 +90,23 @@ jobs:
       - name: Build plugin archive
         run: |
           version="${RELEASE_TAG#v}"
-          for plugin in hyper websearch channel-guard; do
-            python3 scripts/build.py --plugin "$plugin" --version "$version" ${{ matrix.docker }}
-          done
+          python3 scripts/build.py --plugin omni --version "$version" ${{ matrix.docker }}
       - uses: actions/checkout@v4
         with:
           repository: router-for-me/CLIProxyAPI
-          ref: v8.0.31
+          ref: v8.0.36
           path: .cache/upstream
       - name: Build unmodified official CPA
         working-directory: .cache/upstream
         run: go build -o "$RUNNER_TEMP/cpa-host.exe" ./cmd/server
       - name: Official host integration
-        run: python3 scripts/integration.py --cpa-binary "$RUNNER_TEMP/cpa-host.exe" --plugin "dist/hyper.${{ matrix.ext }}"
-      - name: Hyper independent Resin proxy integration
-        run: python3 scripts/integration_hyper_proxy.py --cpa-binary "$RUNNER_TEMP/cpa-host.exe" --plugin "dist/hyper.${{ matrix.ext }}"
-      - name: WebSearch official host integration
-        run: python3 scripts/integration_websearch.py --cpa-binary "$RUNNER_TEMP/cpa-host.exe" --plugin "dist/websearch.${{ matrix.ext }}"
-      - name: Channel Guard official host integration
-        run: python3 scripts/integration_channel_guard.py --cpa-binary "$RUNNER_TEMP/cpa-host.exe" --plugin "dist/channel-guard.${{ matrix.ext }}"
-      - uses: actions/checkout@v4
-        if: matrix.platform == 'linux-amd64'
-        with:
-          repository: seakee/CPA-Manager-Plus
-          ref: v1.14.6
-          path: .cache/manager
-      - name: Build unmodified CPAMP
-        if: matrix.platform == 'linux-amd64'
-        working-directory: .cache/manager/apps/manager-server
-        run: go build -o "$RUNNER_TEMP/cpamp-host" ./cmd/cpa-manager-plus
-      - name: Full CPA and CPAMP integration
-        if: matrix.platform == 'linux-amd64'
-        run: python3 scripts/integration.py --cpa-binary "$RUNNER_TEMP/cpa-host.exe" --plugin dist/hyper.so --manager-binary "$RUNNER_TEMP/cpamp-host"
+        run: python3 scripts/integration_omni.py --cpa-binary "$RUNNER_TEMP/cpa-host.exe" --plugin "dist/omni.${{ matrix.ext }}"
       - name: Upload verified archive to draft Release
         env:
           GH_TOKEN: ${{ secrets.MAIN_REPO_TOKEN }}
           SOURCE_REPO: ${{ env.SOURCE_REPO }}
           RELEASE_TAG: ${{ env.RELEASE_TAG }}
-        run: gh release upload "$RELEASE_TAG" --repo "$SOURCE_REPO" dist/hyper_*.zip dist/websearch_*.zip dist/channel-guard_*.zip --clobber
+        run: gh release upload "$RELEASE_TAG" --repo "$SOURCE_REPO" dist/omni_*.zip --clobber
 
   release:
     needs: build
@@ -142,7 +121,7 @@ jobs:
           mkdir -p dist
           gh release download "$RELEASE_TAG" --repo "$SOURCE_REPO" --pattern '*.zip' --dir dist
           cd dist
-          test "$(find . -maxdepth 1 -name '*.zip' | wc -l)" -eq 15
+          test "$(find . -maxdepth 1 -name '*.zip' | wc -l)" -eq 5
           sha256sum *.zip > checksums.txt
           gh release upload "$RELEASE_TAG" --repo "$SOURCE_REPO" checksums.txt --clobber
           prerelease_flag=()

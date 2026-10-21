@@ -5,7 +5,7 @@ This public repository hosts the release automation for [CLIProxyAPI-Plugins](ht
 ## Release flow
 
 - `sync-private-tags` reads version tags from the private source repository every 5 minutes and dispatches a `release` run for every tag that has not been published yet. A specific tag can also be published immediately via manual dispatch.
-- `release` checks out the exact private source tag, builds macOS (ARM64 and Intel), Windows (AMD64), and Linux (glibc AMD64 and ARM64) plugin dynamic library archives for all active plugins (`hyper`, `channel-guard`, `websearch`), runs unit and official CPA host integration tests, then creates the GitHub Release **in the private source repository** together with all archives and `checksums.txt`.
+- `release` checks out the exact private source tag, builds macOS (ARM64 and Intel), Windows (AMD64), and Linux (glibc AMD64 and ARM64) plugin dynamic library archives for the active `omni` plugin, runs unit tests and the official CPA v8.0.36 host integration test, then creates the GitHub Release **in the private source repository** together with all archives and `checksums.txt`.
 
 Private source is only checked out temporarily on trusted GitHub-hosted runners. It is never committed to this repository, and workflows do not use GitHub Actions build caches, SBOM, or provenance attestations.
 
